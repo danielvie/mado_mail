@@ -266,6 +266,25 @@
 
   const markedCount = $derived(Object.keys(markedActions).length);
   const gridStyle = $derived(`grid-template-columns: ${colWidths[0]}px 4px ${colWidths[1]}px 4px 1fr;`);
+  let authCode = $state('');
+  async function handleAuthorize() {
+    if (!authCode) return;
+    actionInProgress = true;
+    try {
+      // @ts-ignore
+      const res = await window.electron.ipcRenderer.invoke('gmail-submit-code', authCode);
+      if (res.success) {
+        authCode = '';
+        fetchEmails();
+      } else {
+        error = res.error;
+      }
+    } catch (err: any) {
+      error = err.message;
+    } finally {
+      actionInProgress = false;
+    }
+  }
 </script>
 
 <main class="h-screen w-screen flex flex-col p-4 bg-base text-accent">
@@ -328,7 +347,30 @@
   </header>
 
   {#if error}
-    <div class="mb-4 p-3 bg-danger/20 border border-danger text-danger rounded-lg text-[10px] font-mono shrink-0 uppercase">Error: {error}</div>
+    <div class="mb-4 p-4 bg-danger/10 border border-danger/50 text-danger rounded-lg text-xs font-mono shrink-0 whitespace-pre-wrap break-all leading-relaxed flex flex-col gap-3">
+      <div>
+        <strong>ERROR:</strong>
+        {@html error.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" class="underline hover:text-white transition-colors">$1</a>')}
+      </div>
+      
+      {#if error.includes('TOKEN REQUIRED')}
+        <div class="flex gap-2 items-center p-2 bg-danger/20 rounded border border-danger/30">
+          <input 
+            type="text" 
+            bind:value={authCode} 
+            placeholder="Paste authorization code here..."
+            class="flex-1 bg-surface text-danger px-3 py-1.5 rounded border border-danger/50 focus:outline-none focus:border-brand text-xs"
+          />
+          <button 
+            onclick={handleAuthorize}
+            disabled={!authCode || actionInProgress}
+            class="px-4 py-1.5 bg-brand text-base font-bold rounded uppercase text-[10px] hover:bg-brand/80 transition-all disabled:opacity-50"
+          >
+            Authorize
+          </button>
+        </div>
+      {/if}
+    </div>
   {/if}
 
   <div class="flex-1 overflow-hidden border border-surface-active rounded-xl bg-surface flex flex-col shadow-xl">

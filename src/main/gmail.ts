@@ -6,42 +6,75 @@ import { homedir } from 'os'
 
 let authClient: any = null
 
+const MADO_PATH = join(homedir(), '.mado', 'mado_mail')
+const SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+
+function getPaths() {
+  return [process.cwd(), join(process.cwd(), '..'), MADO_PATH]
+}
+
+function findCredentials() {
+  let secretPath = ''
+  let tokenPath = ''
+  
+  for (const p of getPaths()) {
+    const s = join(p, 'client_secret.json')
+    const t = join(p, 'token.json')
+    if (existsSync(s)) secretPath = s
+    if (existsSync(t)) tokenPath = t
+    if (secretPath && tokenPath) break
+  }
+  
+  return { secretPath, tokenPath }
+}
+
 function getAuthClient() {
   if (authClient) return authClient
 
-  const madoPath = join(homedir(), '.mado', 'mado_mail')
-  // Ensure the mado directory exists as requested
-  if (!existsSync(madoPath)) {
-    mkdirSync(madoPath, { recursive: true })
-  }
+  const { secretPath, tokenPath } = findCredentials()
 
-  const pathsToTry = [
-    process.cwd(),
-    join(process.cwd(), '..'),
-    madoPath
-  ]
+  if (!secretPath) {
+    const errorMsg = `
+🔑 GMAIL AUTHENTICATION REQUIRED
 
-  let secretPath = ''
-  let tokenPath = ''
+'client_secret.json' could not be found.
 
-  for (const p of pathsToTry) {
-    const s = join(p, 'client_secret.json')
-    const t = join(p, 'token.json')
-    if (existsSync(s) && existsSync(t)) {
-      secretPath = s
-      tokenPath = t
-      break
-    }
-  }
+How to fix this:
+1. Obtain 'client_secret.json' from Google Cloud Console:
+   https://console.cloud.google.com/apis/credentials
 
-  if (!secretPath || !tokenPath) {
-    throw new Error(`Credentials not found. Checked: ${pathsToTry.join(', ')}. Run Go app first.`)
+2. Save it to the following directory:
+   📂 ${MADO_PATH}
+    `.trim();
+    throw new Error(errorMsg)
   }
 
   const secretContent = readFileSync(secretPath, 'utf8')
   const credentials = JSON.parse(secretContent)
   const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web
-  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0])
+  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'urn:ietf:wg:oauth:2.0:oob')
+
+  if (!tokenPath) {
+    const authUrl = oAuth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: SCOPES,
+      redirect_uri: 'urn:ietf:wg:oauth:2.0:oob'
+    })
+    
+    const errorMsg = `
+🎫 TOKEN REQUIRED
+
+'client_secret.json' was found, but you are not authenticated yet.
+
+How to fix this:
+1. Open this URL in your browser:
+   ${authUrl}
+
+2. Follow the instructions and copy the authorization code from the page.
+3. Paste that code into the 'AUTHORIZE' box below.
+    `.trim();
+    throw new Error(errorMsg)
+  }
 
   const tokenContent = readFileSync(tokenPath, 'utf8')
   const token = JSON.parse(tokenContent)
@@ -132,6 +165,36 @@ export function setupGmailIPC() {
       })
       return { success: true }
     } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  ipcMain.handle('gmail-submit-code', async (_, code: string) => {
+    try {
+      const { secretPath } = findCredentials()
+      if (!secretPath) throw new Error('client_secret.json missing')
+      
+      const secretContent = readFileSync(secretPath, 'utf8')
+      const credentials = JSON.parse(secretContent)
+      const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web
+      const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'urn:ietf:wg:oauth:2.0:oob')
+      
+      const { tokens } = await oAuth2Client.getToken(code)
+      
+      if (!existsSync(MADO_PATH)) {
+        mkdirSync(MADO_PATH, { recursive: true })
+      }
+      
+      const tokenPath = join(MADO_PATH, 'token.json')
+      const { writeFileSync } = await import('fs')
+      writeFileSync(tokenPath, JSON.stringify(tokens))
+      
+      oAuth2Client.setCredentials(tokens)
+      authClient = oAuth2Client
+      
+      return { success: true }
+    } catch (error: any) {
+      console.error(error)
       return { success: false, error: error.message }
     }
   })
