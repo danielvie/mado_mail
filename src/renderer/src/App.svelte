@@ -1,0 +1,436 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { Agentation } from 'agentation-svelte';
+  import { draggable } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+
+  type EmailMsg = {
+    id: string;
+    threadId: string;
+    snippet: string;
+    from: string;
+    subject: string;
+    date: string;
+  };
+
+  let emails = $state<EmailMsg[]>([]);
+  let loading = $state(false);
+  let error = $state<string | null>(null);
+  
+  let searchQuery = $state('');
+  let sortKey = $state<'date' | 'from' | 'subject'>('date');
+  let sortDesc = $state(true);
+
+  let selectedIds = $state<Set<string>>(new Set());
+  let lastSelectedId = $state<string | null>(null);
+  let markedActions = $state<Record<string, 'archive' | 'trash'>>({});
+
+  let actionInProgress = $state(false);
+  let autoApply = $state(false);
+
+  // Column resizing state
+  let colWidths = $state([200, 400, 150]);
+  let startWidth = 0;
+  let startWidthNext = 0;
+
+  // Peek state
+  let hoveredEmail = $state<EmailMsg | null>(null);
+  let mousePos = $state({ x: 0, y: 0 });
+
+  function handleMouseMove(e: MouseEvent, email: EmailMsg) {
+    if (e.ctrlKey) {
+      hoveredEmail = email;
+      mousePos = { x: e.clientX, y: e.clientY };
+    } else {
+      hoveredEmail = null;
+    }
+  }
+
+  async function fetchEmails() {
+    loading = true;
+    error = null;
+    try {
+      // @ts-ignore
+      const res = await window.electron.ipcRenderer.invoke('gmail-fetch-inbox');
+      if (res.success) {
+        emails = res.data;
+        selectedIds.clear();
+        lastSelectedId = null;
+        markedActions = {};
+      } else {
+        error = res.error;
+      }
+    } catch (err: any) {
+      error = err.message;
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(() => {
+    const saved = localStorage.getItem('colWidths');
+    if (saved) {
+      try {
+        colWidths = JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse colWidths', e);
+      }
+    }
+    const savedSort = localStorage.getItem('sortInfo');
+    if (savedSort) {
+      try {
+        const { key, desc } = JSON.parse(savedSort);
+        sortKey = key;
+        sortDesc = desc;
+      } catch (e) {
+        console.error('Failed to parse sortInfo', e);
+      }
+    }
+    const savedAuto = localStorage.getItem('autoApply');
+    if (savedAuto) {
+      autoApply = savedAuto === 'true';
+    }
+    fetchEmails();
+  });
+
+  $effect(() => {
+    localStorage.setItem('colWidths', JSON.stringify(colWidths));
+  });
+
+  $effect(() => {
+    localStorage.setItem('sortInfo', JSON.stringify({ key: sortKey, desc: sortDesc }));
+  });
+
+  $effect(() => {
+    localStorage.setItem('autoApply', autoApply.toString());
+  });
+
+  const filteredEmails = $derived(emails.filter(e => {
+    const q = searchQuery.toLowerCase();
+    return e.from.toLowerCase().includes(q) || 
+           e.subject.toLowerCase().includes(q) ||
+           e.snippet.toLowerCase().includes(q);
+  }));
+
+  const sortedEmails = $derived([...filteredEmails].sort((a, b) => {
+    let valA = a[sortKey].toLowerCase();
+    let valB = b[sortKey].toLowerCase();
+    
+    if (sortKey === 'date') {
+      const dateA = new Date(a.date).getTime() || 0;
+      const dateB = new Date(b.date).getTime() || 0;
+      return sortDesc ? dateB - dateA : dateA - dateB;
+    }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  }));
+
+  function handleSort(key: typeof sortKey) {
+    if (sortKey === key) {
+      sortDesc = !sortDesc;
+    } else {
+      sortKey = key;
+      sortDesc = true;
+    }
+  }
+
+  function handleRowClick(id: string) {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    selectedIds = newSelected;
+    lastSelectedId = id;
+  }
+
+  function handleRowRightClick(event: MouseEvent, id: string) {
+    event.preventDefault();
+    if (!lastSelectedId) {
+      selectedIds = new Set([id]);
+      lastSelectedId = id;
+      return;
+    }
+    const currentIdx = sortedEmails.findIndex(e => e.id === id);
+    const lastIdx = sortedEmails.findIndex(e => e.id === lastSelectedId);
+    if (currentIdx !== -1 && lastIdx !== -1) {
+      const start = Math.min(currentIdx, lastIdx);
+      const end = Math.max(currentIdx, lastIdx);
+      const newSelected = new Set(selectedIds);
+      for (let i = start; i <= end; i++) {
+        newSelected.add(sortedEmails[i].id);
+      }
+      selectedIds = newSelected;
+      lastSelectedId = id;
+    }
+  }
+
+  async function markSelected(action: 'archive' | 'trash' | 'unmark') {
+    if (selectedIds.size === 0) return;
+
+    if (autoApply && action !== 'unmark') {
+      actionInProgress = true;
+      try {
+        const ids = Array.from(selectedIds);
+        if (action === 'archive') await window.electron.ipcRenderer.invoke('gmail-archive', ids);
+        if (action === 'trash') await window.electron.ipcRenderer.invoke('gmail-trash', ids);
+        emails = emails.filter(e => !selectedIds.has(e.id));
+        selectedIds = new Set();
+      } catch (err: any) {
+        error = err.message;
+      } finally {
+        actionInProgress = false;
+      }
+      return;
+    }
+
+    const newMarks = { ...markedActions };
+    for (const id of selectedIds) {
+      if (action === 'unmark') {
+        delete newMarks[id];
+      } else {
+        newMarks[id] = action;
+      }
+    }
+    markedActions = newMarks;
+    selectedIds = new Set();
+  }
+
+  function handleRowMouseDown(event: MouseEvent, id: string) {
+    if (event.button === 1) {
+      event.preventDefault();
+      if (selectedIds.has(id)) {
+        selectedIds = new Set();
+      } else {
+        const newSelected = new Set(selectedIds);
+        for (const email of sortedEmails) {
+          newSelected.add(email.id);
+        }
+        selectedIds = newSelected;
+      }
+    }
+  }
+
+  async function executeActions() {
+    const archiveIds = Object.entries(markedActions).filter(([_, a]) => a === 'archive').map(([id]) => id);
+    const trashIds = Object.entries(markedActions).filter(([_, a]) => a === 'trash').map(([id]) => id);
+    if (archiveIds.length === 0 && trashIds.length === 0) return;
+    actionInProgress = true;
+    try {
+      if (archiveIds.length > 0) await window.electron.ipcRenderer.invoke('gmail-archive', archiveIds);
+      if (trashIds.length > 0) await window.electron.ipcRenderer.invoke('gmail-trash', trashIds);
+      const processedIds = new Set([...archiveIds, ...trashIds]);
+      emails = emails.filter(e => !processedIds.has(e.id));
+      markedActions = {};
+    } catch (err: any) {
+      error = err.message;
+    } finally {
+      actionInProgress = false;
+    }
+  }
+
+  function resizable(node: HTMLElement, index: number) {
+    return draggable({
+      element: node,
+      onDragStart: () => {
+        startWidth = colWidths[index];
+        if (index === 0) startWidthNext = colWidths[1];
+      },
+      onDrag: ({ location }) => {
+        const deltaX = location.current.input.clientX - location.initial.input.clientX;
+        
+        if (index === 0) {
+          // Resize From (col 0), take from Subject (col 1)
+          let newWidth = Math.max(50, startWidth + deltaX);
+          let actualDelta = newWidth - startWidth;
+          
+          if (startWidthNext - actualDelta < 50) {
+            actualDelta = startWidthNext - 50;
+            newWidth = startWidth + actualDelta;
+          }
+          
+          colWidths[0] = newWidth;
+          colWidths[1] = startWidthNext - actualDelta;
+        } else {
+          // Resize Subject (col 1), take from Date (1fr)
+          colWidths[1] = Math.max(50, startWidth + deltaX);
+        }
+      },
+      onGenerateDragPreview: ({ nativeSetDragImage }) => {
+        nativeSetDragImage(new Image(), 0, 0);
+      }
+    });
+  }
+
+  const markedCount = $derived(Object.keys(markedActions).length);
+  const gridStyle = $derived(`grid-template-columns: ${colWidths[0]}px 4px ${colWidths[1]}px 4px 1fr;`);
+</script>
+
+<main class="h-screen w-screen flex flex-col p-4 bg-base text-accent">
+  <!-- Header / Controls -->
+  <header class="flex justify-between items-center mb-6 gap-4 shrink-0 p-2 rounded-xl bg-surface border border-surface-active shadow-sm">
+    <div class="flex items-center gap-3 w-1/3 relative">
+      <svg class="w-5 h-5 absolute left-3 text-accent-dim pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+      <input 
+        type="text" 
+        bind:value={searchQuery} 
+        placeholder="Search..."
+        class="w-full bg-surface-hover text-accent pl-10 pr-10 py-2 rounded-lg border border-transparent focus:border-brand focus:outline-none transition-all placeholder:text-accent-dim text-sm"
+      />
+      {#if searchQuery}
+        <button 
+          aria-label="Clear search"
+          onclick={() => searchQuery = ''} 
+          class="absolute right-3 text-accent-dim hover:text-brand transition-colors p-1"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      {/if}
+    </div>
+
+    <div class="flex items-center gap-4">
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" bind:checked={autoApply} class="w-4 h-4 accent-brand bg-surface border-surface-active rounded" />
+        <span class="text-[10px] font-mono uppercase tracking-wider {autoApply ? 'text-brand' : 'text-accent-dim'}">Auto-Apply</span>
+      </label>
+
+      <div class="flex items-center gap-2">
+        <div class="text-[10px] text-accent-dim font-mono flex flex-col items-end mr-2">
+          <span>{emails.length} emails</span>
+          <span>{selectedIds.size} selected</span>
+          <span class="text-brand/80">{markedCount} marked</span>
+        </div>
+        <button onclick={() => markSelected('archive')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-brand text-base rounded-lg border border-brand/50 hover:bg-brand/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">ARCHIVE_SEL</button>
+        <button onclick={() => markSelected('trash')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-danger text-white rounded-lg border border-danger/50 hover:bg-danger/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">DELETE_SEL</button>
+        <button onclick={() => markSelected('unmark')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-surface-active text-accent rounded-lg border border-accent/20 hover:bg-surface-active/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">UNMARK_SEL</button>
+        <div class="w-px h-6 bg-surface-active mx-1"></div>
+        <button onclick={executeActions} disabled={markedCount === 0 || actionInProgress} class="px-4 py-1.5 bg-brand text-base rounded-lg border border-brand/50 hover:bg-brand/80 transition-all disabled:opacity-20 font-bold shadow-[0_0_15px_rgba(214,255,0,0.15)] text-xs font-mono uppercase">Apply_All</button>
+      </div>
+
+      <button 
+        aria-label="Refresh"
+        onclick={fetchEmails} 
+        disabled={loading} 
+        class="p-2 bg-surface-hover text-accent-dim rounded-lg hover:text-brand transition-all"
+        title="Refresh"
+      >
+        <svg class="w-5 h-5 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  {#if error}
+    <div class="mb-4 p-3 bg-danger/20 border border-danger text-danger rounded-lg text-[10px] font-mono shrink-0 uppercase">Error: {error}</div>
+  {/if}
+
+  <div class="flex-1 overflow-hidden border border-surface-active rounded-xl bg-surface flex flex-col shadow-xl">
+    <!-- Header -->
+    <div class="grid gap-0 p-0 border-b border-surface-active bg-surface-active/30 font-mono text-[10px] text-accent-dim uppercase tracking-widest shrink-0" style={gridStyle}>
+      <div 
+        role="button"
+        tabindex="0"
+        class="p-3 cursor-pointer hover:text-accent select-none truncate" 
+        onclick={() => handleSort('from')}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('from'); }}
+      >
+        FROM {#if sortKey === 'from'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
+      </div>
+      <div use:resizable={0} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
+      
+      <div 
+        role="button"
+        tabindex="0"
+        class="p-3 cursor-pointer hover:text-accent select-none truncate" 
+        onclick={() => handleSort('subject')}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('subject'); }}
+      >
+        SUBJECT {#if sortKey === 'subject'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
+      </div>
+      <div use:resizable={1} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
+
+      <div 
+        role="button"
+        tabindex="0"
+        class="p-3 cursor-pointer hover:text-accent select-none text-right" 
+        onclick={() => handleSort('date')}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('date'); }}
+      >
+        {#if sortKey === 'date'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if} DATE
+      </div>
+    </div>
+
+    <!-- Body -->
+    <div class="flex-1 overflow-y-auto overflow-x-hidden relative">
+      {#if loading && emails.length === 0}
+        <div class="absolute inset-0 flex items-center justify-center text-accent-dim font-mono text-[10px] animate-pulse">CONNECTING...</div>
+      {:else if sortedEmails.length === 0}
+        <div class="absolute inset-0 flex items-center justify-center text-accent-dim font-mono text-[10px]">NO_DATA</div>
+      {:else}
+        {#each sortedEmails as email (email.id)}
+          <div 
+            role="button"
+            tabindex="0"
+            class="grid gap-0 p-0 border-b border-surface-active cursor-pointer transition-all hover:bg-surface-hover/50 text-sm group relative
+                   {selectedIds.has(email.id) ? 'bg-surface-active' : ''}"
+            style={gridStyle}
+            onclick={() => handleRowClick(email.id)}
+            oncontextmenu={(e) => handleRowRightClick(e, email.id)}
+            onmousedown={(e) => handleRowMouseDown(e, email.id)}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleRowClick(email.id); }}
+          >
+            {#if markedActions[email.id]}
+              <div class="absolute left-0 top-0 bottom-0 w-1 {markedActions[email.id] === 'archive' ? 'bg-brand' : 'bg-danger'} z-10"></div>
+            {/if}
+
+            <div class="p-3 truncate font-medium flex items-center gap-2">
+              {#if markedActions[email.id]}
+                <span class="text-[11px] px-1 rounded bg-surface-active font-mono {markedActions[email.id] === 'archive' ? 'text-brand' : 'text-danger'}">
+                  {markedActions[email.id] === 'archive' ? 'A' : 'D'}
+                </span>
+              {/if}
+              <span class="truncate {selectedIds.has(email.id) ? 'text-brand' : 'text-accent/90'}">{email.from}</span>
+            </div>
+            <div class="bg-transparent w-1"></div>
+
+            <div 
+              role="tooltip"
+              aria-label="Subject with peek"
+              class="p-3 truncate flex items-center gap-2"
+              onmousemove={(e) => handleMouseMove(e, email)}
+              onmouseleave={() => hoveredEmail = null}
+            >
+              <span class="truncate {selectedIds.has(email.id) ? 'text-accent' : 'text-accent/80'}">{email.subject || '(No Subject)'}</span>
+            </div>
+            <div class="bg-transparent w-1"></div>
+
+            <div class="p-3 text-right text-accent-dim font-mono text-[11px] whitespace-nowrap self-center">
+              {new Date(email.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </div>
+          </div>
+        {/each}
+      {/if}
+    </div>
+  </div>
+
+  {#if hoveredEmail}
+    <div 
+      class="fixed z-50 p-4 bg-surface-active border border-brand/50 rounded-lg shadow-2xl max-w-md pointer-events-none"
+      style="left: {mousePos.x + 20}px; top: {mousePos.y + 20}px;"
+    >
+      <div class="text-[10px] text-brand font-mono mb-2 uppercase tracking-tighter">Snippet Peek</div>
+      <div class="text-xs text-accent/90 italic leading-relaxed">
+        {hoveredEmail.snippet}
+      </div>
+    </div>
+  {/if}
+
+  <Agentation endpoint="http://localhost:4747" />
+</main>
