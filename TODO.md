@@ -24,3 +24,41 @@
 
 - [x] Shrink search input header width <!-- id: 16 -->
 - [x] Run Svelte check <!-- id: 17 -->
+
+# TODO: Refactor App.svelte into deep modules
+
+- [x] Identify stable module boundaries <!-- id: 18 -->
+- [x] Extract shared types <!-- id: 19 -->
+- [x] Extract header/error/table/list/modal UI modules <!-- id: 20 -->
+- [x] Wire App.svelte to extracted modules without behavior changes <!-- id: 21 -->
+- [x] Run Svelte check <!-- id: 22 -->
+
+# TODO: Unmark all fallback
+
+- [x] Change unmark button label/disabled state for marked-only state <!-- id: 23 -->
+- [x] Clear all marks when UNMARK_ALL is pressed <!-- id: 24 -->
+- [x] Run Svelte check <!-- id: 25 -->
+
+# TODO: Alt mark cursor affordance
+
+- [x] Track Alt key state in mail table <!-- id: 26 -->
+- [x] Change hovered row cursor/style when Alt can mark item <!-- id: 27 -->
+- [x] Run Svelte check <!-- id: 28 -->
+
+# TODO: Fit email columns
+
+- [x] Add fit-columns control to header <!-- id: 29 -->
+- [x] Change grid sizing so Date and From can fit while Subject fills rest <!-- id: 30 -->
+- [x] Implement auto-fit sizing from visible inbox data <!-- id: 31 -->
+- [x] Run Svelte check <!-- id: 32 -->
+
+# TODO: Stable list toggle width
+
+- [x] Give List toggle a fixed width <!-- id: 33 -->
+- [x] Run Svelte check <!-- id: 34 -->
+
+# TODO: Move fit columns control
+
+- [x] Remove FIT_COLS from header controls <!-- id: 35 -->
+- [x] Add FIT_COLS beside table titles <!-- id: 36 -->
+- [x] Run Svelte check <!-- id: 37 -->
