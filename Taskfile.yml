@@ -1,6 +1,16 @@
 version: '3'
 
 tasks:
+
+  default:
+    cmds:
+      - task --list
+
+  run:
+    desc: Run the development server
+    cmds:
+      - task: dev
+
   dev:
     desc: Run the development server
     cmds:

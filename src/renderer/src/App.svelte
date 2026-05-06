@@ -12,6 +12,14 @@
     date: string;
   };
 
+  type MarkAction = 'archive' | 'trash';
+  type ViewMode = 'emails' | 'marked';
+  type MarkedItem = {
+    id: string;
+    from: string;
+    action: MarkAction;
+  };
+
   let emails = $state<EmailMsg[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -22,7 +30,10 @@
 
   let selectedIds = $state<Set<string>>(new Set());
   let lastSelectedId = $state<string | null>(null);
-  let markedActions = $state<Record<string, 'archive' | 'trash'>>({});
+  let markedActions = $state<Record<string, MarkAction>>({});
+  let markedItems = $state<MarkedItem[]>([]);
+  let viewMode = $state<ViewMode>('emails');
+  let queryActive = $state(false);
 
   let actionInProgress = $state(false);
   let autoApply = $state(false);
@@ -35,6 +46,10 @@
   // Peek state
   let hoveredEmail = $state<EmailMsg | null>(null);
   let mousePos = $state({ x: 0, y: 0 });
+  let editingOpen = $state(false);
+  let editingItem = $state<MarkedItem | null>(null);
+  let editingFrom = $state('');
+  let editingAction = $state<MarkAction>('archive');
 
   function handleMouseMove(e: MouseEvent, email: EmailMsg) {
     if (e.ctrlKey) {
@@ -53,9 +68,10 @@
       const res = await window.electron.ipcRenderer.invoke('gmail-fetch-inbox');
       if (res.success) {
         emails = res.data;
-        selectedIds.clear();
+        selectedIds = new Set();
         lastSelectedId = null;
         markedActions = {};
+        queryActive = false;
       } else {
         error = res.error;
       }
@@ -89,6 +105,14 @@
     if (savedAuto) {
       autoApply = savedAuto === 'true';
     }
+    const savedMarkedItems = localStorage.getItem('markedItems');
+    if (savedMarkedItems) {
+      try {
+        markedItems = JSON.parse(savedMarkedItems);
+      } catch (e) {
+        console.error('Failed to parse markedItems', e);
+      }
+    }
     fetchEmails();
   });
 
@@ -104,7 +128,13 @@
     localStorage.setItem('autoApply', autoApply.toString());
   });
 
-  const filteredEmails = $derived(emails.filter(e => {
+  $effect(() => {
+    localStorage.setItem('markedItems', JSON.stringify(markedItems));
+  });
+
+  const queryEmails = $derived(queryActive ? emails.filter(e => markedActions[e.id]) : emails);
+
+  const filteredEmails = $derived(queryEmails.filter(e => {
     const q = searchQuery.toLowerCase();
     return e.from.toLowerCase().includes(q) || 
            e.subject.toLowerCase().includes(q) ||
@@ -135,7 +165,13 @@
     }
   }
 
-  function handleRowClick(id: string) {
+  function handleRowClick(event: MouseEvent | KeyboardEvent, email: EmailMsg) {
+    if (event.altKey) {
+      event.preventDefault();
+      openMarkedItemEditor(email);
+      return;
+    }
+    const id = email.id;
     const newSelected = new Set(selectedIds);
     if (newSelected.has(id)) {
       newSelected.delete(id);
@@ -167,7 +203,7 @@
     }
   }
 
-  async function markSelected(action: 'archive' | 'trash' | 'unmark') {
+  async function markSelected(action: MarkAction | 'unmark') {
     if (selectedIds.size === 0) return;
 
     if (autoApply && action !== 'unmark') {
@@ -231,6 +267,77 @@
     }
   }
 
+  function findMarkedItem(email: EmailMsg) {
+    const from = email.from.toLowerCase();
+    return markedItems.find(item => item.from.trim() && from.includes(item.from.trim().toLowerCase()));
+  }
+
+  async function runMarkedItemsQuery() {
+    if (markedItems.length === 0) return;
+    loading = true;
+    error = null;
+    try {
+      // @ts-ignore
+      const res = await window.electron.ipcRenderer.invoke('gmail-fetch-inbox');
+      if (!res.success) {
+        error = res.error;
+        return;
+      }
+
+      const nextEmails = res.data as EmailMsg[];
+      const nextMarks: Record<string, MarkAction> = {};
+      for (const email of nextEmails) {
+        const item = findMarkedItem(email);
+        if (item) nextMarks[email.id] = item.action;
+      }
+
+      emails = nextEmails;
+      markedActions = nextMarks;
+      selectedIds = new Set();
+      lastSelectedId = null;
+      queryActive = true;
+      viewMode = 'emails';
+    } catch (err: any) {
+      error = err.message;
+    } finally {
+      loading = false;
+    }
+  }
+
+  function openMarkedItemEditor(email: EmailMsg) {
+    const existing = findMarkedItem(email);
+    editingOpen = true;
+    editingItem = existing ? { ...existing } : null;
+    editingFrom = existing?.from ?? email.from;
+    editingAction = existing?.action ?? 'archive';
+  }
+
+  function saveMarkedItem() {
+    const from = editingFrom.trim();
+    if (!from) return;
+
+    if (editingItem) {
+      markedItems = markedItems.map(item =>
+        item.id === editingItem?.id ? { ...item, from, action: editingAction } : item
+      );
+    } else {
+      markedItems = [{ id: crypto.randomUUID(), from, action: editingAction }, ...markedItems];
+    }
+    closeMarkedItemEditor();
+  }
+
+  function deleteMarkedItem(id: string) {
+    markedItems = markedItems.filter(item => item.id !== id);
+    if (editingItem?.id === id) closeMarkedItemEditor();
+  }
+
+  function closeMarkedItemEditor() {
+    editingOpen = false;
+    editingItem = null;
+    editingFrom = '';
+    editingAction = 'archive';
+  }
+
   function resizable(node: HTMLElement, index: number) {
     return draggable({
       element: node,
@@ -265,6 +372,7 @@
   }
 
   const markedCount = $derived(Object.keys(markedActions).length);
+  const markedItemCount = $derived(markedItems.length);
   const gridStyle = $derived(`grid-template-columns: ${colWidths[0]}px 4px ${colWidths[1]}px 4px 1fr;`);
   let authCode = $state('');
   async function handleAuthorize() {
@@ -290,7 +398,7 @@
 <main class="h-screen w-screen flex flex-col p-4 bg-base text-accent">
   <!-- Header / Controls -->
   <header class="flex justify-between items-center mb-6 gap-4 shrink-0 p-2 rounded-xl bg-surface border border-surface-active shadow-sm">
-    <div class="flex items-center gap-3 w-1/3 relative">
+    <div class="flex items-center gap-3 w-3/12 relative">
       <svg class="w-5 h-5 absolute left-3 text-accent-dim pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
       </svg>
@@ -324,7 +432,12 @@
           <span>{emails.length} emails</span>
           <span>{selectedIds.size} selected</span>
           <span class="text-brand/80">{markedCount} marked</span>
+          <span>{markedItemCount} items</span>
         </div>
+        <button onclick={() => viewMode = viewMode === 'emails' ? 'marked' : 'emails'} disabled={actionInProgress} class="px-3 py-1.5 bg-surface-active text-accent rounded-lg border border-accent/20 hover:bg-surface-hover transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">
+          {viewMode === 'emails' ? 'List+' : 'List-'}
+        </button>
+        <button onclick={runMarkedItemsQuery} disabled={markedItemCount === 0 || actionInProgress || loading} class="px-3 py-1.5 bg-surface-hover text-brand rounded-lg border border-brand/40 hover:bg-brand/10 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">Run_Query</button>
         <button onclick={() => markSelected('archive')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-brand text-base rounded-lg border border-brand/50 hover:bg-brand/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">ARCHIVE_SEL</button>
         <button onclick={() => markSelected('trash')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-danger text-white rounded-lg border border-danger/50 hover:bg-danger/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">DELETE_SEL</button>
         <button onclick={() => markSelected('unmark')} disabled={selectedIds.size === 0 || actionInProgress} class="px-3 py-1.5 bg-surface-active text-accent rounded-lg border border-accent/20 hover:bg-surface-active/80 transition-all disabled:opacity-20 text-xs font-mono font-bold uppercase shadow-sm">UNMARK_SEL</button>
@@ -373,45 +486,75 @@
     </div>
   {/if}
 
+  {#if queryActive && viewMode === 'emails'}
+    <div class="mb-3 flex items-center justify-between shrink-0 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 font-mono text-[10px] uppercase text-brand">
+      <span>QUERY_RESULT: {markedCount} matched inbox emails</span>
+      <button onclick={() => queryActive = false} class="text-accent-dim hover:text-accent">SHOW_ALL</button>
+    </div>
+  {/if}
+
   <div class="flex-1 overflow-hidden border border-surface-active rounded-xl bg-surface flex flex-col shadow-xl">
     <!-- Header -->
-    <div class="grid gap-0 p-0 border-b border-surface-active bg-surface-active/30 font-mono text-[10px] text-accent-dim uppercase tracking-widest shrink-0" style={gridStyle}>
-      <div 
-        role="button"
-        tabindex="0"
-        class="p-3 cursor-pointer hover:text-accent select-none truncate" 
-        onclick={() => handleSort('from')}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('from'); }}
-      >
-        FROM {#if sortKey === 'from'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
-      </div>
-      <div use:resizable={0} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
-      
-      <div 
-        role="button"
-        tabindex="0"
-        class="p-3 cursor-pointer hover:text-accent select-none truncate" 
-        onclick={() => handleSort('subject')}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('subject'); }}
-      >
-        SUBJECT {#if sortKey === 'subject'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
-      </div>
-      <div use:resizable={1} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
+    {#if viewMode === 'emails'}
+      <div class="grid gap-0 p-0 border-b border-surface-active bg-surface-active/30 font-mono text-[10px] text-accent-dim uppercase tracking-widest shrink-0" style={gridStyle}>
+        <div 
+          role="button"
+          tabindex="0"
+          class="p-3 cursor-pointer hover:text-accent select-none truncate" 
+          onclick={() => handleSort('from')}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('from'); }}
+        >
+          FROM {#if sortKey === 'from'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
+        </div>
+        <div use:resizable={0} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
+        
+        <div 
+          role="button"
+          tabindex="0"
+          class="p-3 cursor-pointer hover:text-accent select-none truncate" 
+          onclick={() => handleSort('subject')}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('subject'); }}
+        >
+          SUBJECT {#if sortKey === 'subject'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if}
+        </div>
+        <div use:resizable={1} class="cursor-col-resize hover:bg-brand/20 transition-colors w-1 bg-surface-active/50"></div>
 
-      <div 
-        role="button"
-        tabindex="0"
-        class="p-3 cursor-pointer hover:text-accent select-none text-right" 
-        onclick={() => handleSort('date')}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('date'); }}
-      >
-        {#if sortKey === 'date'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if} DATE
+        <div 
+          role="button"
+          tabindex="0"
+          class="p-3 cursor-pointer hover:text-accent select-none text-right" 
+          onclick={() => handleSort('date')}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSort('date'); }}
+        >
+          {#if sortKey === 'date'}<span class="text-brand">{sortDesc ? '↓' : '↑'}</span>{/if} DATE
+        </div>
       </div>
-    </div>
+    {:else}
+      <div class="grid grid-cols-[1fr_140px_120px] gap-0 border-b border-surface-active bg-surface-active/30 font-mono text-[10px] text-accent-dim uppercase tracking-widest shrink-0">
+        <div class="p-3 truncate">FROM MATCH</div>
+        <div class="p-3">MARK</div>
+        <div class="p-3 text-right">ACTION</div>
+      </div>
+    {/if}
 
     <!-- Body -->
     <div class="flex-1 overflow-y-auto overflow-x-hidden relative">
-      {#if loading && emails.length === 0}
+      {#if viewMode === 'marked'}
+        {#if markedItems.length === 0}
+          <div class="absolute inset-0 flex items-center justify-center text-accent-dim font-mono text-[10px]">NO_MARKED_ITEMS</div>
+        {:else}
+          {#each markedItems as item (item.id)}
+            <div class="grid grid-cols-[1fr_140px_120px] gap-0 border-b border-surface-active text-sm hover:bg-surface-hover/50">
+              <div class="p-3 truncate text-accent/90">{item.from}</div>
+              <div class="p-3 font-mono text-[11px] uppercase {item.action === 'archive' ? 'text-brand' : 'text-danger'}">{item.action === 'archive' ? 'Archive' : 'Delete'}</div>
+              <div class="p-2 flex justify-end gap-2">
+                <button onclick={() => { editingOpen = true; editingItem = { ...item }; editingFrom = item.from; editingAction = item.action; }} class="px-2 py-1 rounded bg-surface-active text-accent-dim hover:text-accent font-mono text-[10px] uppercase">Edit</button>
+                <button onclick={() => deleteMarkedItem(item.id)} class="px-2 py-1 rounded bg-danger/10 text-danger hover:bg-danger/20 font-mono text-[10px] uppercase">Drop</button>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      {:else if loading && emails.length === 0}
         <div class="absolute inset-0 flex items-center justify-center text-accent-dim font-mono text-[10px] animate-pulse">CONNECTING...</div>
       {:else if sortedEmails.length === 0}
         <div class="absolute inset-0 flex items-center justify-center text-accent-dim font-mono text-[10px]">NO_DATA</div>
@@ -423,10 +566,10 @@
             class="grid gap-0 p-0 border-b border-surface-active cursor-pointer transition-all hover:bg-surface-hover/50 text-sm group relative
                    {selectedIds.has(email.id) ? 'bg-surface-active' : ''}"
             style={gridStyle}
-            onclick={() => handleRowClick(email.id)}
+            onclick={(e) => handleRowClick(e, email)}
             oncontextmenu={(e) => handleRowRightClick(e, email.id)}
             onmousedown={(e) => handleRowMouseDown(e, email.id)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleRowClick(email.id); }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleRowClick(e, email); }}
           >
             {#if markedActions[email.id]}
               <div class="absolute left-0 top-0 bottom-0 w-1 {markedActions[email.id] === 'archive' ? 'bg-brand' : 'bg-danger'} z-10"></div>
@@ -470,6 +613,39 @@
       <div class="text-[10px] text-brand font-mono mb-2 uppercase tracking-tighter">Snippet Peek</div>
       <div class="text-xs text-accent/90 italic leading-relaxed">
         {hoveredEmail.snippet}
+      </div>
+    </div>
+  {/if}
+
+  {#if editingOpen}
+    <div class="fixed inset-0 z-50 bg-base/60 flex items-center justify-center p-4" onclick={closeMarkedItemEditor}>
+      <div class="w-full max-w-md rounded-xl border border-surface-active bg-surface shadow-2xl" onclick={(e) => e.stopPropagation()}>
+        <div class="border-b border-surface-active px-4 py-3 font-mono text-[10px] uppercase tracking-widest text-accent-dim">
+          Marked Item
+        </div>
+        <div class="p-4 flex flex-col gap-4">
+          <label class="flex flex-col gap-2">
+            <span class="font-mono text-[10px] uppercase tracking-wider text-accent-dim">From</span>
+            <input
+              type="text"
+              bind:value={editingFrom}
+              class="w-full rounded-lg border border-surface-active bg-surface-hover px-3 py-2 text-sm text-accent focus:border-brand focus:outline-none"
+            />
+          </label>
+
+          <div class="flex flex-col gap-2">
+            <span class="font-mono text-[10px] uppercase tracking-wider text-accent-dim">Mark</span>
+            <div class="grid grid-cols-2 gap-2">
+              <button onclick={() => editingAction = 'archive'} class="rounded-lg border px-3 py-2 font-mono text-[10px] uppercase transition-all {editingAction === 'archive' ? 'border-brand bg-brand text-base' : 'border-surface-active bg-surface-hover text-accent-dim hover:text-accent'}">Archive</button>
+              <button onclick={() => editingAction = 'trash'} class="rounded-lg border px-3 py-2 font-mono text-[10px] uppercase transition-all {editingAction === 'trash' ? 'border-danger bg-danger text-white' : 'border-surface-active bg-surface-hover text-accent-dim hover:text-accent'}">Delete</button>
+            </div>
+          </div>
+
+          <div class="flex justify-between gap-2 pt-2">
+            <button onclick={closeMarkedItemEditor} class="px-3 py-2 rounded-lg bg-surface-active text-accent-dim hover:text-accent font-mono text-[10px] uppercase">Cancel</button>
+            <button onclick={saveMarkedItem} disabled={!editingFrom.trim()} class="px-4 py-2 rounded-lg bg-brand text-base font-mono text-[10px] font-bold uppercase disabled:opacity-30">Save</button>
+          </div>
+        </div>
       </div>
     </div>
   {/if}
