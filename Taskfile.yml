@@ -19,7 +19,7 @@ tasks:
   build:
     desc: Build the project
     cmds:
-      - npm run build
+      - bun run build:win
 
   test:
     desc: Run tests

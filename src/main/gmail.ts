@@ -51,7 +51,7 @@ How to fix this:
 
   const secretContent = readFileSync(secretPath, 'utf8')
   const credentials = JSON.parse(secretContent)
-  const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web
+  const { client_secret, client_id } = credentials.installed || credentials.web
   const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'urn:ietf:wg:oauth:2.0:oob')
 
   if (!tokenPath) {
@@ -176,7 +176,7 @@ export function setupGmailIPC() {
       
       const secretContent = readFileSync(secretPath, 'utf8')
       const credentials = JSON.parse(secretContent)
-      const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web
+      const { client_secret, client_id } = credentials.installed || credentials.web
       const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'urn:ietf:wg:oauth:2.0:oob')
       
       const { tokens } = await oAuth2Client.getToken(code)

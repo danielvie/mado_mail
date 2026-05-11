@@ -62,3 +62,22 @@
 - [x] Remove FIT_COLS from header controls <!-- id: 35 -->
 - [x] Add FIT_COLS beside table titles <!-- id: 36 -->
 - [x] Run Svelte check <!-- id: 37 -->
+
+# TODO: Replace app icons
+
+- [x] Identify icon source files and app icon targets <!-- id: 38 -->
+- [x] Replace runtime/build PNG icon assets <!-- id: 39 -->
+- [x] Regenerate package icons if conversion tools are available <!-- id: 40 -->
+- [x] Run build/check verification (`bun run build` still blocked by existing `gmail.ts` unused variables) <!-- id: 41 -->
+
+# TODO: Sort item list alphabetically
+
+- [x] Find the item list data/rendering path <!-- id: 42 -->
+- [x] Sort the displayed items alphabetically <!-- id: 43 -->
+- [x] Run focused verification <!-- id: 44 -->
+
+# TODO: Build Windows release
+
+- [x] Run `bun run build:win` and capture blockers <!-- id: 45 -->
+- [x] Fix build-blocking issues only <!-- id: 46 -->
+- [x] Re-run `bun run build:win` successfully <!-- id: 47 -->

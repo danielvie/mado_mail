@@ -62,6 +62,7 @@
   const queryEmails = $derived(queryActive ? emails.filter((email) => markedActions[email.id]) : emails);
   const filteredEmails = $derived(filterEmails(queryEmails, searchQuery));
   const sortedEmails = $derived(sortEmails(filteredEmails, sortKey, sortDesc));
+  const sortedMarkedItems = $derived(sortMarkedItems(markedItems));
   const markedCount = $derived(Object.keys(markedActions).length);
   const markedItemCount = $derived(markedItems.length);
   const gridStyle = $derived(`grid-template-columns: ${colWidths[0]}px 4px minmax(50px, 1fr) 4px ${colWidths[2]}px;`);
@@ -111,6 +112,12 @@
       if (valA > valB) return desc ? -1 : 1;
       return 0;
     });
+  }
+
+  function sortMarkedItems(sourceItems: MarkedItem[]) {
+    return [...sourceItems].sort((a, b) =>
+      a.from.localeCompare(b.from, undefined, { sensitivity: 'base' })
+    );
   }
 
   function fitColumns() {
@@ -476,7 +483,7 @@
       />
     {:else}
       <MarkedItemsView
-        {markedItems}
+        markedItems={sortedMarkedItems}
         onEdit={editMarkedItem}
         onDelete={deleteMarkedItem}
       />
